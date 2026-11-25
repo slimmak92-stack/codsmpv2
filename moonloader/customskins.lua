@@ -105,9 +105,11 @@ end
 local function loadSkin(s)
     if s.id then return s.id end
     if not core then return nil, "customskins_core.dll not loaded" end
+    log("loadSkin: calling CS_AddSkin for " .. s.name)
     local ok, id = pcall(core.CS_AddSkin, s.dff, s.txd, s.name, getCharModel(PLAYER_PED))
     if not ok then return nil, tostring(id) end
     if id < 0 then return nil, ERR[id] or ("error " .. id) end
+    log("loadSkin: got id " .. id)
     s.id = id
     return id
 end
@@ -128,10 +130,14 @@ local function wear(id)
     local h = getCharHeading(PLAYER_PED)
     local inCar = isCharInAnyCar(PLAYER_PED)
 
+    log("wear: requestModel(" .. id .. ")")
     requestModel(id)
+    log("wear: loadAllModelsNow")
     loadAllModelsNow()
+    log("wear: setPlayerModel")
     setPlayerModel(PLAYER_HANDLE, id)
     wait(0)
+    log("wear: done")
 
     if doesCharExist(PLAYER_PED) then
         if not inCar then
@@ -197,6 +203,7 @@ end
 function main()
     while not isSampAvailable() do wait(100) end
     rescan()
+    log("v0.9 started, dll " .. (core and "loaded" or "MISSING") .. ", " .. #sortedNames() .. " skins")
     if not core then say("{FF5555}customskins_core.dll missing in moonloader\\lib") end
 
     sampRegisterChatCommand("models", function()

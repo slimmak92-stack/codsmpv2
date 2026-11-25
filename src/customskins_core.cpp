@@ -10,6 +10,8 @@
 #include <windows.h>
 #include <cstdint>
 #include <cctype>
+#include <cstdio>
+#include <cstdarg>
 #include <cstring>
 #include <string>
 #include <map>
@@ -61,6 +63,19 @@ enum {
     CS_ERR_EXCEPTION = -8,
 };
 
+
+// Step log: opened/flushed/closed on every line so the LAST line survives a crash.
+static void L(const char* fmt, ...)
+{
+    FILE* f = fopen("moonloader\\customskins_core.log", "a");
+    if (!f) return;
+    va_list ap; va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    va_end(ap);
+    fputc('\n', f);
+    fflush(f); fclose(f);
+}
+
 static int g_nextSlot = 0;
 static std::map<std::string, int> g_loaded; // lowercase name -> model id
 
@@ -69,22 +84,28 @@ static int LoadIntoNewModel(int id, const char* dff, const char* txd,
                             const char* slotName, int basePlayerModel)
 {
     __try {
+        L("[%d] FindTxdSlot(%s)", id, slotName);
         int slot = FindTxdSlot(slotName);
         if (slot == -1) slot = AddTxdSlot(slotName);
         if (slot < 0) return CS_ERR_TXD_SLOT;
+        L("[%d] LoadTxd slot=%d %s", id, slot, txd);
         if (!LoadTxd(slot, txd)) return CS_ERR_TXD_LOAD;
         TxdAddRef(slot);
 
+        L("[%d] AddPedModel", id);
         uint8_t* info = (uint8_t*)AddPedModel(id);
         if (!info) return CS_ERR_ADDMODEL;
 
         // copy ped-specific fields (ped type, stat, anim group, colmodel...)
+        L("[%d] info=%p, base model=%d", id, info, basePlayerModel);
         uint8_t* base = (uint8_t*)MODEL_INFO_PTRS[basePlayerModel];
         if (base) memcpy(info + 0x28, base + 0x28, 0x1C);
 
+        L("[%d] set txd index", id);
         *(int16_t*)(info + 0x0A) = (int16_t)slot; // txd index
 
         TxdSetCurrent(slot);
+        L("[%d] RwStreamOpen %s", id, dff);
         void* stream = RwStreamOpen(rwSTREAMFILENAME, rwSTREAMREAD, dff);
         if (!stream) return CS_ERR_DFF_OPEN;
 
@@ -94,13 +115,17 @@ static int LoadIntoNewModel(int id, const char* dff, const char* txd,
         RwStreamClose(stream, nullptr);
         if (!clump) return CS_ERR_DFF_CLUMP;
 
+        L("[%d] PedSetClump clump=%p", id, clump);
         PedSetClump(info, nullptr, clump);
 
         // mark as already loaded so the streamer never tries to read it from an IMG
+        L("[%d] mark streaming info loaded", id);
         *(uint8_t*)(STREAM_INFO + (uintptr_t)id * 0x14 + 0x10) = 1;
+        L("[%d] done OK", id);
         return CS_OK;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
+        L("[%d] EXCEPTION caught", id);
         return CS_ERR_EXCEPTION;
     }
 }
