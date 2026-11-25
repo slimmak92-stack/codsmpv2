@@ -106,7 +106,7 @@ local function loadSkin(s)
     if s.id then return s.id end
     if not core then return nil, "customskins_core.dll not loaded" end
     log("loadSkin: calling CS_AddSkin for " .. s.name)
-    local ok, id = pcall(core.CS_AddSkin, s.dff, s.txd, s.name, getCharModel(PLAYER_PED))
+    local ok, id = pcall(core.CS_AddSkin, s.dff, s.txd, s.name, 0)
     if not ok then return nil, tostring(id) end
     if id < 0 then return nil, ERR[id] or ("error " .. id) end
     log("loadSkin: got id " .. id)
@@ -114,38 +114,21 @@ local function loadSkin(s)
     return id
 end
 
+local CUSTOM_MIN = 312 -- ids >= this are ours (see BASE_ID in the DLL)
+
+-- Only gives control back. No teleport, no clearing tasks -> no visible hitch.
 local function unfreezePlayer()
     if not doesCharExist(PLAYER_PED) then return end
     setPlayerControl(PLAYER_HANDLE, true)
     freezeCharPosition(PLAYER_PED, false)
-    setCharCollision(PLAYER_PED, true)
-    if not isCharInAnyCar(PLAYER_PED) then clearCharTasksImmediately(PLAYER_PED) end
-    restoreCameraJumpcut()
 end
 
--- run inside a MoonLoader thread
 local function wear(id)
     if not doesCharExist(PLAYER_PED) then return end
-    local x, y, z = getCharCoordinates(PLAYER_PED)
-    local h = getCharHeading(PLAYER_PED)
-    local inCar = isCharInAnyCar(PLAYER_PED)
-
-    log("wear: requestModel(" .. id .. ")")
     requestModel(id)
-    log("wear: loadAllModelsNow")
     loadAllModelsNow()
-    log("wear: setPlayerModel")
     setPlayerModel(PLAYER_HANDLE, id)
-    wait(0)
-    log("wear: done")
-
-    if doesCharExist(PLAYER_PED) then
-        if not inCar then
-            setCharCoordinates(PLAYER_PED, x, y, z)
-            setCharHeading(PLAYER_PED, h)
-        end
-        unfreezePlayer()
-    end
+    unfreezePlayer()
 end
 
 local function applySkinByName(name, silent)
@@ -164,7 +147,10 @@ local function applySkinByName(name, silent)
 
     busy = true
     local ok, res = pcall(function()
-        if not active and doesCharExist(PLAYER_PED) then origSkin = getCharModel(PLAYER_PED) end
+        if doesCharExist(PLAYER_PED) then
+            local m = getCharModel(PLAYER_PED)
+            if m < CUSTOM_MIN then origSkin = m end
+        end
         local id, err = loadSkin(s)
         if not id then
             if not silent then say("failed: " .. tostring(err)) end
@@ -197,6 +183,21 @@ local function removeSkin()
     end)
     busy = false
     say("back to normal skin {AAAAAA}(auto-save cleared)")
+end
+
+-- Optional (needs SAMP.Lua): swallow the server's own skin change for our player
+-- so the vanilla skin never flashes. Falls back to the per-frame check in main().
+local okEv, sampev = pcall(require, "samp.events")
+if okEv and sampev then
+    function sampev.onSetPlayerSkin(playerId, skinId)
+        if active then
+            local ok, myId = sampGetPlayerIdByCharHandle(PLAYER_PED)
+            if ok and myId == playerId then
+                origSkin = skinId
+                return false
+            end
+        end
+    end
 end
 
 -- main ----------------------------------------------------------
@@ -237,28 +238,41 @@ function main()
         end
     end)
 
-    if cfg.settings.autoApply and cfg.settings.savedSkin ~= "" then
-        lua_thread.create(function()
-            while not (sampIsLocalPlayerSpawned() and doesCharExist(PLAYER_PED)) do wait(500) end
-            wait(1500)
-            if not active and cfg.settings.savedSkin ~= "" then
-                if applySkinByName(cfg.settings.savedSkin, true) then
-                    say("auto-loaded saved skin: " .. activeName)
-                else
-                    say("saved skin '" .. cfg.settings.savedSkin .. "' could not be loaded")
-                end
+    -- Preload the saved skin NOW (before spawn) so nothing has to load at spawn time.
+    if cfg.settings.autoApply and cfg.settings.savedSkin ~= "" and core then
+        while not doesCharExist(PLAYER_PED) do wait(100) end
+        local s = findSkin(cfg.settings.savedSkin)
+        if s then
+            local id, err = loadSkin(s)
+            if id then
+                active, activeName = id, s.name
+                log("preloaded saved skin " .. s.name .. " (id " .. id .. ")")
+            else
+                say("saved skin could not be loaded: " .. tostring(err))
             end
-        end)
+        end
     end
 
+    -- Keep the custom skin on. Checked every frame, so after a spawn / server skin
+    -- change it is corrected within ~2 frames instead of up to a second later.
+    local lastApply, mismatch = 0, 0
     while true do
-        wait(1000)
+        wait(0)
         if active and not busy and sampIsLocalPlayerSpawned()
-           and doesCharExist(PLAYER_PED) and not isCharDead(PLAYER_PED)
-           and getCharModel(PLAYER_PED) ~= active then
-            busy = true
-            pcall(wear, active)
-            busy = false
+           and doesCharExist(PLAYER_PED) and not isCharDead(PLAYER_PED) then
+            local m = getCharModel(PLAYER_PED)
+            if m ~= active then
+                mismatch = mismatch + 1
+                if mismatch >= 2 and os.clock() - lastApply > 0.25 then
+                    if m < CUSTOM_MIN then origSkin = m end
+                    lastApply = os.clock()
+                    busy = true
+                    pcall(wear, active)
+                    busy = false
+                end
+            else
+                mismatch = 0
+            end
         end
     end
 end
