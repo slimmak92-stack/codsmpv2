@@ -99,7 +99,14 @@ static int LoadIntoNewModel(int id, const char* dff, const char* txd,
         // copy ped-specific fields (ped type, stat, anim group, colmodel...)
         L("[%d] info=%p, base model=%d", id, info, basePlayerModel);
         uint8_t* base = (uint8_t*)MODEL_INFO_PTRS[basePlayerModel];
-        if (base) memcpy(info + 0x28, base + 0x28, 0x1C);
+        if (!base) { L("[%d] base model info is null", id); return CS_ERR_ADDMODEL; }
+        // CBaseModelInfo::m_pColModel (+0x14) must not be null: the renderer
+        // reads the bounding box from it every frame (crash at 0x5334FE).
+        // Shared pointer from the base ped; we never delete our model so no double free.
+        memcpy(info + 0x14, base + 0x14, 4);
+        // CPedModelInfo: hit col model (+0x24), anim group, ped type, stat type, ...
+        memcpy(info + 0x24, base + 0x24, 0x20);
+        L("[%d] colmodel=%p hitcol=%p", id, *(void**)(info + 0x14), *(void**)(info + 0x24));
 
         L("[%d] set txd index", id);
         *(int16_t*)(info + 0x0A) = (int16_t)slot; // txd index
